@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     future::Future,
     io,
+    io::IoSliceMut,
     net::{SocketAddr, SocketAddrV6},
     pin::Pin,
     str,
@@ -18,7 +19,7 @@ use crate::{
     broadcast::{self, Broadcast},
     builders::EndpointBuilder,
     connection::Connecting,
-    udp::UdpSocket,
+    udp::{RecvMeta, UdpSocket},
     ConnectionEvent, EndpointEvent, VarInt, IO_LOOP_BOUND,
 };
 
@@ -257,12 +258,19 @@ where
     fn drive_recv(&mut self, cx: &mut Context, now: Instant) -> Result<bool, io::Error> {
         let mut recvd = 0;
         loop {
-            match self.socket.poll_recv(cx, &mut self.recv_buf) {
-                Poll::Ready(Ok((n, addr, ecn))) => {
-                    match self
-                        .inner
-                        .handle(now, addr, ecn, (&self.recv_buf[0..n]).into())
-                    {
+            let mut meta = [RecvMeta::default()];
+            match self
+                .socket
+                .poll_recv(cx, &mut [IoSliceMut::new(&mut self.recv_buf)], &mut meta)
+            {
+                Poll::Ready(Ok(msgs)) => {
+                    debug_assert_eq!(msgs, 1);
+                    match self.inner.handle(
+                        now,
+                        meta[0].addr,
+                        meta[0].ecn,
+                        (&self.recv_buf[0..meta[0].len]).into(),
+                    ) {
                         Some((handle, DatagramEvent::NewConnection(conn))) => {
                             let conn = self.create_connection(handle, conn);
                             if self.incoming_live {
